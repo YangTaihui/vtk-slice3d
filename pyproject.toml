@@ -1,0 +1,11 @@
+[project]
+name = "vtk-slice3d"
+version = "0.1.0"
+description = "3D slice visualization with VTK"
+authors = [{name="Taihui Yang"}]
+readme = "README.md"
+license = {text = "MIT"}
+dependencies = ["matplotlib", "numpy", "quaternion", "vtk"]
+
+[tool.setuptools.packages.find]
+where = ["."]
