@@ -6,22 +6,22 @@ import quaternion
 import vtk
 
 
-class SceneViewer:
-	def __init__(self, data, size=(2,2,2), cmap='jet', q0=(1, 0, 0, 0), step=(15,15,15), cam_pos=(5,5,5), cam_focal=(0,0,0),cam_up=(1,0,0),cam_clip=(3,10),bg=(1.,1.,1.),show_orientation_marker=True,show_outline=True,win_name='slice3d',win_size=(600,600)):
+class Viewer:
+	def __init__(self, data, size=(2, 2, 2), cmap='jet', q0=(1, 0, 0, 0), cam_pos=(5, -5, -5), cam_focal=(0, 0, 0),
+	             cam_up=(1, 0, 0), cam_clip=(3, 15), bg=(1., 1., 1.), show_orientation_marker=True, show_outline=True,
+	             win_name='slice3d', projection=True, win_size=(600, 600)):
 		data = (data - np.min(data)) / (np.max(data) - np.min(data)) * 255
-		self.data = data
 		self.nx, self.ny, self.nz = data.shape
 		self.vtk_data = vtk.vtkImageData()
-		self.vtk_data.SetOrigin(-size[0]/2, -size[1]/2, -size[2]/2)
-		self.vtk_data.SetDimensions(*size)
-		self.vtk_data.SetSpacing(*size)
+		self.vtk_data.SetOrigin(-size[0] / 2, -size[1] / 2, -size[2] / 2)
+		self.vtk_data.SetExtent(0, self.nx - 1, 0, self.ny - 1, 0, self.nz - 1)
+		self.vtk_data.SetSpacing(2.0 / (self.nx - 1), 2.0 / (self.ny - 1), 2.0 / (self.nz - 1))
 		flat_data = data.ravel(order='F')
 		vtk_array = numpy_support.numpy_to_vtk(num_array=flat_data, deep=True, array_type=vtk.VTK_FLOAT)
 		self.vtk_data.GetPointData().SetScalars(vtk_array)
 
 		self.q0 = quaternion.quaternion(*q0)
 		self.q = quaternion.quaternion(*q0)
-		self.step = {'x': step[0], 'y': step[1], 'z': step[2]}
 		self.rot_axis = {'x': np.array([1, 0, 0]), 'y': np.array([0, 1, 0]), 'z': np.array([0, 0, 1])}
 		self.bounds = (-1, 1, -1, 1, -1, 1)
 		self.text_anchors = []
@@ -42,28 +42,20 @@ class SceneViewer:
 		self.render_window.SetSize(*win_size)
 		self.interactor = vtk.vtkRenderWindowInteractor()
 		self.interactor.SetRenderWindow(self.render_window)
-		self.interactor.AddObserver(vtk.vtkCommand.KeyPressEvent, self.keypress_callback)
 		if show_orientation_marker:
 			self.add_orientation_marker()
 		if show_outline:
 			self.add_outline()
-		self.reset()
-
-	def reset(self):
-		self.camera.SetPosition(*self.cam_pos)
-		self.camera.SetFocalPoint(*self.cam_focal)
-		self.camera.SetViewUp(*self.cam_up)
-		self.camera.SetClippingRange(*self.cam_clip)
-		self.q = self.q0
-		self.apply_quaternion()
-		self.update_text_positions()
-		self.render_window.Render()
+		if projection:
+			self.camera.ParallelProjectionOn()
+		else:
+			self.camera.ParallelProjectionOff()
 
 	def make_cmap(self, x):
-		if isinstance(x, str):	# 情况一：传入 colormap 名称
+		if isinstance(x, str):  # 情况一：传入 colormap 名称
 			cmap = matplotlib.colormaps.get_cmap(x)
 			colors = (cmap(np.linspace(0, 1, 256)) * 255).astype(np.uint8)  # 转成 0-255
-		else:			        # 情况二：传入 numpy 数组
+		else:  # 情况二：传入 numpy 数组
 			arr = np.asarray(x)
 			if arr.shape[0] != 256 or arr.shape[1] not in (3, 4):
 				raise ValueError('数组必须是 256x3 或 256x4')
@@ -85,6 +77,98 @@ class SceneViewer:
 		vtk_arr.SetVoidArray(colors, 256 * 4, 1)  # 直接绑定 numpy 内存
 		lut.SetTable(vtk_arr)
 		return lut
+
+	def make_actor(self, source, color, linewidth=None):
+		mapper = vtk.vtkPolyDataMapper()
+		mapper.SetInputConnection(source.GetOutputPort())
+		actor = vtk.vtkActor()
+		actor.SetMapper(mapper)
+		actor.GetProperty().SetColor(color)
+		if linewidth is not None:
+			actor.GetProperty().SetLineWidth(linewidth)
+		self.assembly.AddPart(actor)
+
+	def add_orientation_marker(self):
+		self.axes_marker = vtk.vtkAxesActor()
+		self.axes_marker.SetTotalLength(1.0, 1.0, 1.0)
+		self.axes_marker.SetCylinderRadius(0.02)
+		self.axes_marker.GetXAxisCaptionActor2D().GetCaptionTextProperty().SetColor(1, 0, 0)  # X 红色
+		self.axes_marker.GetYAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 1, 0)  # Y 绿色
+		self.axes_marker.GetZAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 0, 1)  # Z 蓝色
+		self.marker = vtk.vtkOrientationMarkerWidget()
+		self.marker.SetOrientationMarker(self.axes_marker)
+		self.marker.SetInteractor(self.interactor)
+		self.marker.SetViewport(0.80, 0.80, 1.00, 1.00)
+		self.marker.EnabledOn()
+		self.marker.InteractiveOff()
+
+	def add_outline(self):
+		cube = vtk.vtkCubeSource()
+		cube.SetBounds(self.bounds)
+		cube.Update()
+		outline = vtk.vtkOutlineFilter()
+		outline.SetInputConnection(cube.GetOutputPort())
+		self.make_actor(outline, (0, 0, 0), 2)
+
+	def reset(self):
+		self.camera.SetPosition(*self.cam_pos)
+		self.camera.SetFocalPoint(*self.cam_focal)
+		self.camera.SetViewUp(*self.cam_up)
+		self.camera.SetClippingRange(*self.cam_clip)
+		self.render_window.Render()
+
+	def show(self, save_fn=None):
+		self.renderer.AddActor(self.assembly)
+		self.renderer.ResetCamera()
+		self.reset()
+		self.render_window.Render()
+		if save_fn is not None:
+			ext = save_fn.lower().split('.')[-1]
+			if ext in ('pdf', 'svg', 'eps', 'ps'):
+				exporter = vtk.vtkGL2PSExporter()
+				if ext == 'pdf':
+					exporter.SetFileFormatToPDF()
+				elif ext == 'svg':
+					exporter.SetFileFormatToSVG()
+					exporter.SetCompress(False)
+				elif ext == 'eps':
+					exporter.SetFileFormatToEPS()
+					exporter.SetCompress(False)
+				elif ext == 'ps':
+					exporter.SetFileFormatToPS()
+					exporter.SetCompress(False)
+				exporter.SetFilePrefix(save_fn[:-len(ext) - 1])
+				exporter.SetRenderWindow(self.render_window)
+				exporter.Write()
+			elif ext in ('png', 'jpg', 'jpeg'):
+				w2i = vtk.vtkWindowToImageFilter()
+				w2i.SetInput(self.render_window)
+				w2i.Update()
+				if ext == 'png':
+					writer = vtk.vtkPNGWriter()
+				else:
+					writer = vtk.vtkJPEGWriter()
+				writer.SetFileName(save_fn)
+				writer.SetInputConnection(w2i.GetOutputPort())
+				writer.Write()
+			else:
+				raise ValueError('不支持的文件格式: ' + save_fn)
+			print(f'已保存图片到 {save_fn}')
+		self.interactor.Start()
+
+
+class SceneViewer(Viewer):
+	def __init__(self, data, step=(15, 15, 15), **kwargs):
+		super().__init__(data, **kwargs)
+		self.step = {'x': step[0], 'y': step[1], 'z': step[2]}
+		self.interactor.AddObserver(vtk.vtkCommand.KeyPressEvent, self.keypress_callback)
+
+	def reset(self):
+		super().reset()
+		self.q = self.q0
+		self.apply_quaternion()
+		self.update_text_positions()
+		self.render_window.Render()
 
 	def apply_quaternion(self):
 		R = quaternion.as_rotation_matrix(self.q)
@@ -111,16 +195,6 @@ class SceneViewer:
 			else:
 				text_actor.SetPosition(new_pos)
 
-	def make_actor(self, source, color, linewidth=None):
-		mapper = vtk.vtkPolyDataMapper()
-		mapper.SetInputConnection(source.GetOutputPort())
-		actor = vtk.vtkActor()
-		actor.SetMapper(mapper)
-		actor.GetProperty().SetColor(color)
-		if linewidth is not None:
-			actor.GetProperty().SetLineWidth(linewidth)
-		self.assembly.AddPart(actor)
-
 	def make_plane(self, plane):
 		cutter = vtk.vtkCutter()
 		cutter.SetCutFunction(plane)
@@ -134,12 +208,12 @@ class SceneViewer:
 		actor.SetMapper(mapper)
 		return actor
 
-	def add_slice(self, axis:int, index:int):
+	def add_slice(self, axis: int, index: int):
 		assert axis in (0, 1, 2)
 		dims = [self.nx, self.ny, self.nz]
 		assert 0 <= index < dims[axis]
 		origin = [0, 0, 0]
-		origin[axis] = 2*index / (dims[axis]-1) - 1
+		origin[axis] = 2 * index / (dims[axis] - 1) - 1
 		normal = [0, 0, 0]
 		normal[axis] = 1
 		plane = vtk.vtkPlane()
@@ -148,7 +222,8 @@ class SceneViewer:
 		actor = self.make_plane(plane)
 		self.assembly.AddPart(actor)
 
-	def add_axis_ticks(self, axis: int, ticks: List[int], labels: List[str], title='Title', tick_length=0.2, axis_pos=(1, 1), plus_dir=True,label_offset=(0,0,0),title_offset=(0,0,0),title_angle=0):
+	def add_axis_ticks(self, axis: int, ticks: List[int], labels: List[str], title='Title', tick_length=0.2,
+	                   axis_pos=(1, 1), plus_dir=True, label_offset=(0, 0, 0), title_offset=(0, 0, 0), title_angle=0):
 		assert axis in (0, 1, 2)
 		assert len(ticks) == len(labels)
 		dims = (self.nx, self.ny, self.nz)
@@ -157,22 +232,22 @@ class SceneViewer:
 		if not plus_dir:
 			tick_length = -tick_length
 		for t, lab in zip(ticks, labels):
-			t = 2*t/(dims[axis]-1)-1
+			t = 2 * t / (dims[axis] - 1) - 1
 			line = vtk.vtkLineSource()
 			text = vtk.vtkBillboardTextActor3D()
 			text.SetInput(lab)
 			if axis == 0:  # X轴
 				line.SetPoint1(t, pos0, pos1)
-				line.SetPoint2(t, pos0+tick_length, pos1)
-				text_pos = t+l0, pos0+l1, pos1+l2
+				line.SetPoint2(t, pos0 + tick_length, pos1)
+				text_pos = t + l0, pos0 + l1, pos1 + l2
 			elif axis == 1:  # Y轴
 				line.SetPoint1(pos0, t, pos1)
-				line.SetPoint2(pos0+tick_length, t, pos1)
-				text_pos = pos0+l0, t+l1, pos1+l2
+				line.SetPoint2(pos0 + tick_length, t, pos1)
+				text_pos = pos0 + l0, t + l1, pos1 + l2
 			elif axis == 2:  # Z轴
 				line.SetPoint1(pos0, pos1, t)
-				line.SetPoint2(pos0+tick_length, pos1, t)
-				text_pos = pos0+l0, pos1+l1, t+l2
+				line.SetPoint2(pos0 + tick_length, pos1, t)
+				text_pos = pos0 + l0, pos1 + l1, t + l2
 			text.SetPosition(*text_pos)
 			self.text_anchors.append((3, text, text_pos))
 			self.make_actor(line, (0, 0, 0))
@@ -185,11 +260,11 @@ class SceneViewer:
 		coord = text_actor.GetPositionCoordinate()
 		coord.SetCoordinateSystemToWorld()
 		if axis == 0:
-			text_pos = t0, pos0+t1, pos1+t2
+			text_pos = t0, pos0 + t1, pos1 + t2
 		elif axis == 1:
-			text_pos = pos0+t0, t1, pos1+t2
+			text_pos = pos0 + t0, t1, pos1 + t2
 		elif axis == 2:
-			text_pos = pos0+t0, pos1+t1, t2
+			text_pos = pos0 + t0, pos1 + t1, t2
 		coord.SetValue(*text_pos)
 		self.text_anchors.append((2, text_actor, text_pos))
 		prop = text_actor.GetTextProperty()
@@ -204,7 +279,7 @@ class SceneViewer:
 		line.SetPoint2(*p2)
 		self.make_actor(line, c, lw)
 
-	def add_cone(self, tip=(0,0,0), direction=(1,0,0), height=0.3, radius=0.1, c=(0.8, 0.3, 0.3), res=20):
+	def add_cone(self, tip=(0, 0, 0), direction=(1, 0, 0), height=0.3, radius=0.1, c=(0.8, 0.3, 0.3), res=20):
 		"""
 		tip: 圆锥顶点坐标
 		direction: 圆锥轴方向
@@ -224,7 +299,7 @@ class SceneViewer:
 		cone.SetResolution(res)
 		self.make_actor(cone, c)
 
-	def add_arrow(self, p1, p2, c=(1., 0., 0.),lw=None,cone_h=None,cone_r=None,cone_res=None):
+	def add_arrow(self, p1, p2, c=(1., 0., 0.), lw=None, cone_h=None, cone_r=None, cone_res=None):
 		v = np.array(p2) - np.array(p1)
 		norm = np.linalg.norm(v)
 		if norm == 0:
@@ -296,28 +371,6 @@ class SceneViewer:
 		transform_filter.SetInputConnection(cylinder.GetOutputPort())
 		self.make_actor(transform_filter, c)
 
-	def add_orientation_marker(self):
-		self.axes_marker = vtk.vtkAxesActor()
-		self.axes_marker.SetTotalLength(1.0, 1.0, 1.0)
-		self.axes_marker.SetCylinderRadius(0.02)
-		self.axes_marker.GetXAxisCaptionActor2D().GetCaptionTextProperty().SetColor(1, 0, 0)  # X 红色
-		self.axes_marker.GetYAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 1, 0)  # Y 绿色
-		self.axes_marker.GetZAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 0, 1)  # Z 蓝色
-		self.marker = vtk.vtkOrientationMarkerWidget()
-		self.marker.SetOrientationMarker(self.axes_marker)
-		self.marker.SetInteractor(self.interactor)
-		self.marker.SetViewport(0.80, 0.80, 1.00, 1.00)
-		self.marker.EnabledOn()
-		self.marker.InteractiveOff()
-
-	def add_outline(self):
-		cube = vtk.vtkCubeSource()
-		cube.SetBounds(self.bounds)
-		cube.Update()
-		outline = vtk.vtkOutlineFilter()
-		outline.SetInputConnection(cube.GetOutputPort())
-		self.make_actor(outline, (0, 0, 0), 2)
-
 	def keypress_callback(self, obj, event):
 		key = obj.GetKeySym()
 		ctrl = obj.GetControlKey()
@@ -331,45 +384,99 @@ class SceneViewer:
 			self.reset()
 		elif key in ('x', 'y', 'z'):
 			sign = -1 if ctrl else 1
-			dq = quaternion.from_rotation_vector(self.rot_axis[key] * np.radians(sign*self.step[key]))
+			dq = quaternion.from_rotation_vector(self.rot_axis[key] * np.radians(sign * self.step[key]))
 			self.q = self.q * dq
 			self.apply_quaternion()
 			self.update_text_positions()
 			self.render_window.Render()
 
-	def plot(self, save_fn=None):
-		self.renderer.AddActor(self.assembly)
+
+class Slice3d(Viewer):
+	def __init__(self, data, xlabel='X', ylabel='Y', zlabel='Z', xlabel_pos=((0.1, 0.9), (0.3, 0.9)),
+	             ylabel_pos=((0.1, 0.8), (0.3, 0.8)), zlabel_pos=((0.1, 0.7), (0.3, 0.7)), **kwargs):
+		super().__init__(data, **kwargs)
+		self.planeX = vtk.vtkImagePlaneWidget()
+		self.planeX.SetInteractor(self.interactor)
+		self.planeX.SetInputData(self.vtk_data)
+		self.planeX.SetPlaneOrientationToXAxes()
+		self.planeX.SetOrigin(-1, -1, -1)
+		self.planeX.SetPoint1(-1, 1, -1)
+		self.planeX.SetPoint2(-1, -1, 1)
+		self.planeX.DisplayTextOn()
+		self.planeX.SetSliceIndex(0)
+		self.planeX.On()
+
+		self.planeY = vtk.vtkImagePlaneWidget()
+		self.planeY.SetInteractor(self.interactor)
+		self.planeY.SetInputData(self.vtk_data)
+		self.planeY.SetPlaneOrientationToYAxes()
+		self.planeY.SetOrigin(-1, 1, -1)
+		self.planeY.SetPoint1(-1, 1, 1)
+		self.planeY.SetPoint2(1, 1, -1)
+		self.planeY.DisplayTextOn()
+		self.planeY.SetSliceIndex(self.ny - 1)
+		self.planeY.On()
+
+		self.planeZ = vtk.vtkImagePlaneWidget()
+		self.planeZ.SetInteractor(self.interactor)
+		self.planeZ.SetInputData(self.vtk_data)
+		self.planeZ.SetPlaneOrientationToZAxes()
+		self.planeZ.SetOrigin(-1, -1, 1)
+		self.planeZ.SetPoint1(1, -1, 1)
+		self.planeZ.SetPoint2(-1, 1, 1)
+		self.planeZ.DisplayTextOn()
+		self.planeZ.SetSliceIndex(self.nz - 1)
+		self.planeZ.On()
+
+		self.planeX.SetLookupTable(self.lut)
+		self.planeY.SetLookupTable(self.lut)
+		self.planeZ.SetLookupTable(self.lut)
+		self.sliderX = self.make_slider(xlabel, (0, self.nx - 1), 0, xlabel_pos, self.update_x)
+		self.sliderY = self.make_slider(ylabel, (0, self.ny - 1), self.ny - 1, ylabel_pos, self.update_y)
+		self.sliderZ = self.make_slider(zlabel, (0, self.nz - 1), self.nz - 1, zlabel_pos, self.update_z)
+
+	def make_slider(self, label, rng, value, pos, callback):
+		rep = vtk.vtkSliderRepresentation2D()
+		rep.SetMinimumValue(rng[0])
+		rep.SetMaximumValue(rng[1])
+		rep.SetValue(value)
+		rep.SetTitleText(label)
+
+		rep.GetPoint1Coordinate().SetCoordinateSystemToNormalizedDisplay()
+		rep.GetPoint2Coordinate().SetCoordinateSystemToNormalizedDisplay()
+		rep.GetPoint1Coordinate().SetValue(*pos[0])
+		rep.GetPoint2Coordinate().SetValue(*pos[1])
+
+		rep.SetSliderLength(0.02)
+		rep.SetSliderWidth(0.03)
+		rep.SetEndCapLength(0.01)
+		rep.SetTitleHeight(0.02)
+		rep.SetLabelHeight(0.02)
+
+		rep.GetTubeProperty().SetColor(0, 0, 0)  # 线
+		rep.GetSliderProperty().SetColor(1, 0, 0)  # 滑块
+		rep.GetCapProperty().SetColor(0, 0, 1)  # 端点
+		rep.GetTitleProperty().SetColor(0, 0, 0)  # 标题
+		rep.GetLabelProperty().SetColor(0, 0, 0)  # 数值标签
+
+		slider = vtk.vtkSliderWidget()
+		slider.SetInteractor(self.interactor)
+		slider.SetRepresentation(rep)
+		slider.AddObserver(vtk.vtkCommand.InteractionEvent, callback)
+		slider.EnabledOn()
+		return slider
+
+	def update_x(self, obj, evt):
+		val = round(obj.GetRepresentation().GetValue())
+		self.planeX.SetSliceIndex(val)
 		self.render_window.Render()
-		if save_fn is not None:
-			ext = save_fn.lower().split('.')[-1]
-			if ext in ('pdf', 'svg', 'eps', 'ps'):
-				exporter = vtk.vtkGL2PSExporter()
-				if ext == 'pdf':
-					exporter.SetFileFormatToPDF()
-				elif ext == 'svg':
-					exporter.SetFileFormatToSVG()
-					exporter.SetCompress(False)
-				elif ext == 'eps':
-					exporter.SetFileFormatToEPS()
-					exporter.SetCompress(False)
-				elif ext == 'ps':
-					exporter.SetFileFormatToPS()
-					exporter.SetCompress(False)
-				exporter.SetFilePrefix(save_fn[:-len(ext) - 1])
-				exporter.SetRenderWindow(self.render_window)
-				exporter.Write()
-			elif ext in ('png', 'jpg', 'jpeg'):
-				w2i = vtk.vtkWindowToImageFilter()
-				w2i.SetInput(self.render_window)
-				w2i.Update()
-				if ext == 'png':
-					writer = vtk.vtkPNGWriter()
-				else:
-					writer = vtk.vtkJPEGWriter()
-				writer.SetFileName(save_fn)
-				writer.SetInputConnection(w2i.GetOutputPort())
-				writer.Write()
-			else:
-				raise ValueError('不支持的文件格式: ' + save_fn)
-			print(f'已保存图片到 {save_fn}')
-		self.interactor.Start()
+
+	def update_y(self, obj, evt):
+		val = round(obj.GetRepresentation().GetValue())
+		self.planeY.SetSliceIndex(val)
+		self.render_window.Render()
+
+	def update_z(self, obj, evt):
+		val = round(obj.GetRepresentation().GetValue())
+		self.planeZ.SetSliceIndex(val)
+		self.render_window.Render()
