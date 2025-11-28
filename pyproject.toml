@@ -2,12 +2,13 @@
 name = "vtk-slice3d"
 version = "0.2.0"
 description = "3D slice visualization with VTK"
-long_description_content_type="text/markdown"
 authors = [{name="Taihui Yang"}]
 readme = "README.md"
 license = {text = "MIT"}
 dependencies = ["matplotlib", "numpy", "quaternion", "vtk"]
-homepage = "https://github.com/YangTaihui/vtk-slice3d"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[project.urls]
+Homepage = "https://github.com/YangTaihui/vtk-slice3d"
