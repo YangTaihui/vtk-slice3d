@@ -1,11 +1,11 @@
 [project]
 name = "vtk-slice3d"
-version = "0.2.0"
+version = "0.3.0"
 description = "3D slice visualization with VTK"
 authors = [{name="Taihui Yang"}]
 readme = "README.md"
 license = {text = "MIT"}
-dependencies = ["matplotlib", "numpy", "quaternion", "vtk"]
+dependencies = ["matplotlib", "numpy", "numpy-quaternion", "vtk"]
 
 [tool.setuptools.packages.find]
 where = ["."]

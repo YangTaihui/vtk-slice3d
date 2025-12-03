@@ -6,16 +6,28 @@ import quaternion
 import vtk
 
 
+def _place(axis: int, a: float, pos0: float, pos1: float):
+	"""Return [x,y,z] where value a is placed at `axis`,
+	and the remaining axes (in ascending order) get pos0, pos1."""
+	v = [None, None, None]
+	v[axis] = a
+	rem = [i for i in (0, 1, 2) if i != axis]
+	v[rem[0]] = pos0
+	v[rem[1]] = pos1
+	return v
+
+
 class Viewer:
 	def __init__(self, data, size=(2, 2, 2), cmap='jet', q0=(1, 0, 0, 0), cam_pos=(5, -5, -5), cam_focal=(0, 0, 0),
 	             cam_up=(1, 0, 0), cam_clip=(3, 15), bg=(1., 1., 1.), show_orientation_marker=True, show_outline=True,
 	             win_name='slice3d', projection=True, win_size=(600, 600)):
 		data = (data - np.min(data)) / (np.max(data) - np.min(data)) * 255
 		self.nx, self.ny, self.nz = data.shape
+		self.size = size
 		self.vtk_data = vtk.vtkImageData()
 		self.vtk_data.SetOrigin(-size[0] / 2, -size[1] / 2, -size[2] / 2)
 		self.vtk_data.SetExtent(0, self.nx - 1, 0, self.ny - 1, 0, self.nz - 1)
-		self.vtk_data.SetSpacing(2.0 / (self.nx - 1), 2.0 / (self.ny - 1), 2.0 / (self.nz - 1))
+		self.vtk_data.SetSpacing(size[0] / (self.nx - 1), size[1] / (self.ny - 1), size[2] / (self.nz - 1))
 		flat_data = data.ravel(order='F')
 		vtk_array = numpy_support.numpy_to_vtk(num_array=flat_data, deep=True, array_type=vtk.VTK_FLOAT)
 		self.vtk_data.GetPointData().SetScalars(vtk_array)
@@ -23,7 +35,7 @@ class Viewer:
 		self.q0 = quaternion.quaternion(*q0)
 		self.q = quaternion.quaternion(*q0)
 		self.rot_axis = {'x': np.array([1, 0, 0]), 'y': np.array([0, 1, 0]), 'z': np.array([0, 0, 1])}
-		self.bounds = (-1, 1, -1, 1, -1, 1)
+		self.bounds = (-size[0]/2, size[0]/2, -size[1]/2, size[1]/2, -size[2]/2, size[2]/2)
 		self.text_anchors = []
 
 		self.cam_pos = cam_pos
@@ -78,12 +90,14 @@ class Viewer:
 		lut.SetTable(vtk_arr)
 		return lut
 
-	def make_actor(self, source, color, linewidth=None):
+	def make_actor(self, source, color, linewidth=None, lightingoff=False):
 		mapper = vtk.vtkPolyDataMapper()
 		mapper.SetInputConnection(source.GetOutputPort())
 		actor = vtk.vtkActor()
 		actor.SetMapper(mapper)
 		actor.GetProperty().SetColor(color)
+		if lightingoff:
+			actor.GetProperty().LightingOff()
 		if linewidth is not None:
 			actor.GetProperty().SetLineWidth(linewidth)
 		self.assembly.AddPart(actor)
@@ -92,9 +106,9 @@ class Viewer:
 		self.axes_marker = vtk.vtkAxesActor()
 		self.axes_marker.SetTotalLength(1.0, 1.0, 1.0)
 		self.axes_marker.SetCylinderRadius(0.02)
-		self.axes_marker.GetXAxisCaptionActor2D().GetCaptionTextProperty().SetColor(1, 0, 0)  # X 红色
-		self.axes_marker.GetYAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 1, 0)  # Y 绿色
-		self.axes_marker.GetZAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 0, 1)  # Z 蓝色
+		self.axes_marker.GetXAxisCaptionActor2D().GetCaptionTextProperty().SetColor(1, 0, 0)  # X red
+		self.axes_marker.GetYAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 1, 0)  # Y green
+		self.axes_marker.GetZAxisCaptionActor2D().GetCaptionTextProperty().SetColor(0, 0, 1)  # Z blue
 		self.marker = vtk.vtkOrientationMarkerWidget()
 		self.marker.SetOrientationMarker(self.axes_marker)
 		self.marker.SetInteractor(self.interactor)
@@ -164,11 +178,10 @@ class SceneViewer(Viewer):
 		self.interactor.AddObserver(vtk.vtkCommand.KeyPressEvent, self.keypress_callback)
 
 	def reset(self):
-		super().reset()
 		self.q = self.q0
 		self.apply_quaternion()
 		self.update_text_positions()
-		self.render_window.Render()
+		super().reset()
 
 	def apply_quaternion(self):
 		R = quaternion.as_rotation_matrix(self.q)
@@ -206,80 +219,112 @@ class SceneViewer(Viewer):
 		mapper.SetScalarRange(0, 255)  # 数据范围
 		actor = vtk.vtkActor()
 		actor.SetMapper(mapper)
+		actor.GetProperty().LightingOff()
 		return actor
 
-	def add_slice(self, axis: int, index: int):
+	def add_slice(self, axis: int, index: int, loc=None, c=(0, 0, 0), lw=2):
 		assert axis in (0, 1, 2)
 		dims = [self.nx, self.ny, self.nz]
 		assert 0 <= index < dims[axis]
 		origin = [0, 0, 0]
-		origin[axis] = 2 * index / (dims[axis] - 1) - 1
+		if index == dims[axis] - 1:
+			origin[axis] = self.size[axis]/2 - 1e-6
+		else:
+			origin[axis] = self.size[axis] * index / (dims[axis] - 1) - self.size[axis]/2
 		normal = [0, 0, 0]
 		normal[axis] = 1
 		plane = vtk.vtkPlane()
 		plane.SetOrigin(*origin)
 		plane.SetNormal(*normal)
 		actor = self.make_plane(plane)
+		# If loc is specified, move the actor to the loc position for display and draw a border line at the original position
+		if loc is not None:
+			pos = self.size[axis] * loc / (dims[axis] - 1) - self.size[axis]/2 - origin[axis]
+			origin[axis] = pos
+			actor.SetPosition(*origin)
+			cutter = vtk.vtkCutter()
+			cutter.SetCutFunction(plane)
+			cutter.SetInputData(self.vtk_data)
+			outline = vtk.vtkOutlineFilter()
+			outline.SetInputConnection(cutter.GetOutputPort())
+			self.make_actor(outline, color=c, linewidth=lw)
 		self.assembly.AddPart(actor)
 
-	def add_axis_ticks(self, axis: int, ticks: List[int], labels: List[str], title='Title', tick_length=0.2,
+	def add_axis_ticks(self, axis: int, parallel_axis: int, ticks: List[int], labels: List[str], title='Title', title_ha='left',title_va='bottom',tick_length=0.2,
 	                   axis_pos=(1, 1), plus_dir=True, label_offset=(0, 0, 0), title_offset=(0, 0, 0), title_angle=0):
 		assert axis in (0, 1, 2)
+		assert parallel_axis in (0, 1, 2)
+		assert parallel_axis != axis
 		assert len(ticks) == len(labels)
+		assert title_ha in ['left', 'center', 'right']
+		assert title_va in ['top', 'center', 'bottom']
 		dims = (self.nx, self.ny, self.nz)
 		pos0, pos1 = axis_pos
 		l0, l1, l2 = label_offset
 		if not plus_dir:
 			tick_length = -tick_length
-		for t, lab in zip(ticks, labels):
-			t = 2 * t / (dims[axis] - 1) - 1
+
+		for t_idx, lab in zip(ticks, labels):
+			# index -> [-1, 1]
+			t = 2 * t_idx / (dims[axis] - 1) - 1
+
+			# line endpoints
+			p1 = _place(axis, t, pos0, pos1)
+			p2 = p1.copy()
+			p2[parallel_axis] += tick_length
+
+			# text position (with offsets applied component-wise)
+			text_pos = [p1[0] + l0, p1[1] + l1, p1[2] + l2]
+
 			line = vtk.vtkLineSource()
+			line.SetPoint1(*p1)
+			line.SetPoint2(*p2)
+			self.make_actor(line, (0, 0, 0))
+
 			text = vtk.vtkBillboardTextActor3D()
 			text.SetInput(lab)
-			if axis == 0:  # X轴
-				line.SetPoint1(t, pos0, pos1)
-				line.SetPoint2(t, pos0 + tick_length, pos1)
-				text_pos = t + l0, pos0 + l1, pos1 + l2
-			elif axis == 1:  # Y轴
-				line.SetPoint1(pos0, t, pos1)
-				line.SetPoint2(pos0 + tick_length, t, pos1)
-				text_pos = pos0 + l0, t + l1, pos1 + l2
-			elif axis == 2:  # Z轴
-				line.SetPoint1(pos0, pos1, t)
-				line.SetPoint2(pos0 + tick_length, pos1, t)
-				text_pos = pos0 + l0, pos1 + l1, t + l2
 			text.SetPosition(*text_pos)
-			self.text_anchors.append((3, text, text_pos))
-			self.make_actor(line, (0, 0, 0))
 			text.GetTextProperty().SetFontSize(12)
 			text.GetTextProperty().SetColor(0, 0, 0)
+			self.text_anchors.append((3, text, text_pos))
 			self.renderer.AddActor(text)
+
+		# Title
 		t0, t1, t2 = title_offset
+		title_pos = _place(axis, t0, pos0 + t1, pos1 + t2)
+
 		text_actor = vtk.vtkTextActor()
 		text_actor.SetInput(title)
 		coord = text_actor.GetPositionCoordinate()
 		coord.SetCoordinateSystemToWorld()
-		if axis == 0:
-			text_pos = t0, pos0 + t1, pos1 + t2
-		elif axis == 1:
-			text_pos = pos0 + t0, t1, pos1 + t2
-		elif axis == 2:
-			text_pos = pos0 + t0, pos1 + t1, t2
-		coord.SetValue(*text_pos)
-		self.text_anchors.append((2, text_actor, text_pos))
+		coord.SetValue(*title_pos)
+
+		self.text_anchors.append((2, text_actor, title_pos))
 		prop = text_actor.GetTextProperty()
 		prop.SetFontSize(18)
 		prop.SetColor(0, 0, 0)
-		prop.SetOrientation(title_angle)  # 屏幕平面旋转角度
+		prop.SetOrientation(title_angle)
+		if title_ha=='left':
+			prop.SetJustificationToLeft()
+		elif title_ha=='center':
+			prop.SetJustificationToCentered()
+		else:
+			prop.SetJustificationToRight()
+		if title_va == 'bottom':
+			prop.SetVerticalJustificationToBottom()
+		elif title_va=='center':
+			prop.SetVerticalJustificationToCentered()
+		else:
+			prop.SetVerticalJustificationToTop()
 		self.renderer.AddActor2D(text_actor)
 
-	def add_line(self, p1, p2, c=(0.5, 0.8, 0.2), lw=2.):
+	def add_line(self, p1, p2, c=(0.5, 0.8, 0.2), lw=2., lightingoff=False):
 		line = vtk.vtkLineSource()
 		line.SetPoint1(*p1)
 		line.SetPoint2(*p2)
-		self.make_actor(line, c, lw)
+		self.make_actor(line, c, lw, lightingoff)
 
-	def add_cone(self, tip=(0, 0, 0), direction=(1, 0, 0), height=0.3, radius=0.1, c=(0.8, 0.3, 0.3), res=20):
+	def add_cone(self, tip=(0, 0, 0), direction=(1, 0, 0), height=0.3, radius=0.1, c=(0, 1, 0), res=20, lightingoff=False):
 		"""
 		tip: 圆锥顶点坐标
 		direction: 圆锥轴方向
@@ -297,9 +342,9 @@ class SceneViewer(Viewer):
 		cone.SetHeight(height)
 		cone.SetRadius(radius)
 		cone.SetResolution(res)
-		self.make_actor(cone, c)
+		self.make_actor(cone, c, lightingoff)
 
-	def add_arrow(self, p1, p2, c=(1., 0., 0.), lw=None, cone_h=None, cone_r=None, cone_res=None):
+	def add_arrow(self, p1, p2, c=(1., 0., 0.), lw=None, cone_h=None, cone_r=None, cone_res=None, lightingoff=False):
 		v = np.array(p2) - np.array(p1)
 		norm = np.linalg.norm(v)
 		if norm == 0:
@@ -313,10 +358,10 @@ class SceneViewer(Viewer):
 			cone_r = cone_h * 0.4  # 箭头底面半径 = 高度的 40%
 		if cone_res is None:
 			cone_res = 20
-		self.add_line(p1, p2, c=c, lw=lw)
-		self.add_cone(p2, direction, height=cone_h, radius=cone_r, c=c, res=cone_res)
+		self.add_line(p1, p2, c=c, lw=lw, lightingoff=lightingoff)
+		self.add_cone(p2, direction, height=cone_h, radius=cone_r, c=c, res=cone_res, lightingoff=lightingoff)
 
-	def add_sphere(self, center=(0, 0, 0), radius=0.2, c=(0.3, 0.6, 0.9), res=20):
+	def add_sphere(self, center=(0, 0, 0), radius=0.2, c=(1, 0, 0), res=20, lightingoff=False):
 		"""
 		center: 球心坐标
 		radius: 半径
@@ -328,9 +373,9 @@ class SceneViewer(Viewer):
 		sphere.SetRadius(radius)
 		sphere.SetThetaResolution(res)  # 经度方向分段数
 		sphere.SetPhiResolution(res)  # 纬度方向分段数
-		self.make_actor(sphere, c)
+		self.make_actor(sphere, c, lightingoff)
 
-	def add_cube(self, center=(0, 0, 0), size=(0.2, 0.2, 0.2), c=(0.8, 0.5, 0.2)):
+	def add_cube(self, center=(0, 0, 0), size=(0.2, 0.2, 0.2), c=(0.8, 0.5, 0.2), lightingoff=False):
 		"""
 		center: 长方体中心坐标
 		size: 边长
@@ -341,10 +386,10 @@ class SceneViewer(Viewer):
 		cube.SetXLength(size[0])
 		cube.SetYLength(size[1])
 		cube.SetZLength(size[2])
-		self.make_actor(cube, c)
+		self.make_actor(cube, c, lightingoff)
 
 	def add_cylinder(self, center=(0, 0, 0), direction=(0, 1, 0),
-	                 height=0.5, radius=0.2, c=(0.2, 0.7, 0.4), res=20):
+	                 height=0.5, radius=0.2, c=(0.2, 0.7, 0.4), res=20, lightingoff=False):
 		"""
 		center: 圆柱中心坐标
 		direction: 圆柱轴方向
@@ -369,7 +414,7 @@ class SceneViewer(Viewer):
 		transform_filter = vtk.vtkTransformPolyDataFilter()
 		transform_filter.SetTransform(transform)
 		transform_filter.SetInputConnection(cylinder.GetOutputPort())
-		self.make_actor(transform_filter, c)
+		self.make_actor(transform_filter, c, lightingoff)
 
 	def keypress_callback(self, obj, event):
 		key = obj.GetKeySym()
@@ -395,13 +440,14 @@ class Slice3d(Viewer):
 	def __init__(self, data, xlabel='X', ylabel='Y', zlabel='Z', xlabel_pos=((0.1, 0.9), (0.3, 0.9)),
 	             ylabel_pos=((0.1, 0.8), (0.3, 0.8)), zlabel_pos=((0.1, 0.7), (0.3, 0.7)), **kwargs):
 		super().__init__(data, **kwargs)
+		xsize, ysize, zsize = self.size[0]/2, self.size[1] / 2, self.size[2] / 2
 		self.planeX = vtk.vtkImagePlaneWidget()
 		self.planeX.SetInteractor(self.interactor)
 		self.planeX.SetInputData(self.vtk_data)
 		self.planeX.SetPlaneOrientationToXAxes()
-		self.planeX.SetOrigin(-1, -1, -1)
-		self.planeX.SetPoint1(-1, 1, -1)
-		self.planeX.SetPoint2(-1, -1, 1)
+		self.planeX.SetOrigin(-xsize, -ysize, -zsize)
+		self.planeX.SetPoint1(-xsize,  ysize, -zsize)
+		self.planeX.SetPoint2(-xsize, -ysize,  zsize)
 		self.planeX.DisplayTextOn()
 		self.planeX.SetSliceIndex(0)
 		self.planeX.On()
@@ -410,9 +456,9 @@ class Slice3d(Viewer):
 		self.planeY.SetInteractor(self.interactor)
 		self.planeY.SetInputData(self.vtk_data)
 		self.planeY.SetPlaneOrientationToYAxes()
-		self.planeY.SetOrigin(-1, 1, -1)
-		self.planeY.SetPoint1(-1, 1, 1)
-		self.planeY.SetPoint2(1, 1, -1)
+		self.planeY.SetOrigin(-xsize, ysize, -zsize)
+		self.planeY.SetPoint1(-xsize, ysize,  zsize)
+		self.planeY.SetPoint2( xsize, ysize, -zsize)
 		self.planeY.DisplayTextOn()
 		self.planeY.SetSliceIndex(self.ny - 1)
 		self.planeY.On()
@@ -421,9 +467,9 @@ class Slice3d(Viewer):
 		self.planeZ.SetInteractor(self.interactor)
 		self.planeZ.SetInputData(self.vtk_data)
 		self.planeZ.SetPlaneOrientationToZAxes()
-		self.planeZ.SetOrigin(-1, -1, 1)
-		self.planeZ.SetPoint1(1, -1, 1)
-		self.planeZ.SetPoint2(-1, 1, 1)
+		self.planeZ.SetOrigin(-xsize, -ysize, zsize)
+		self.planeZ.SetPoint1( xsize, -ysize, zsize)
+		self.planeZ.SetPoint2(-xsize,  ysize, zsize)
 		self.planeZ.DisplayTextOn()
 		self.planeZ.SetSliceIndex(self.nz - 1)
 		self.planeZ.On()
